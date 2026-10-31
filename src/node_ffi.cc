@@ -5,6 +5,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include "base_object-inl.h"
 #include "env-inl.h"
 #include "ffi/data.h"
@@ -13,6 +14,7 @@
 #include "ffi/types.h"
 #include "node_binding.h"
 #include "node_errors.h"
+#include "node_internals.h"
 
 namespace node {
 
@@ -62,10 +64,22 @@ void FFIFunctionInfo::MemoryInfo(MemoryTracker* tracker) const {
 DynamicLibrary::DynamicLibrary(Environment* env, Local<Object> object)
     : BaseObject(env, object) {
   MakeWeak();
+  env->AddCleanupHook(CleanupHook, this);
 }
 
 DynamicLibrary::~DynamicLibrary() {
+  env()->RemoveCleanupHook(CleanupHook, this);
   this->Close();
+}
+
+void DynamicLibrary::CleanupHook(void* arg) {
+  DynamicLibrary* lib = static_cast<DynamicLibrary*>(arg);
+  // Registered callbacks hold strong references to the library, which would
+  // otherwise keep it alive past Environment teardown. Release them only
+  // after Close() returns, since dropping the last reference may delete lib.
+  decltype(lib->callbacks_) callbacks;
+  callbacks.swap(lib->callbacks_);
+  lib->Close();
 }
 
 bool DynamicLibrary::is_closed() const {
@@ -576,6 +590,8 @@ void DynamicLibrary::New(const FunctionCallbackInfo<Value>& args) {
                   opened ? static_cast<void*>(lib->lib_.handle) : nullptr);
   if (!opened) {
     THROW_ERR_FFI_CALL_FAILED(env, "dlopen failed: %s", uv_dlerror(&lib->lib_));
+    // Free the error message. Close() skips uv_dlclose() for a null handle.
+    uv_dlclose(&lib->lib_);
     return;
   }
 }
@@ -770,6 +786,17 @@ void DynamicLibrary::InvokeCallback(ffi_cif* cif,
   // pointer argument surfaces as the BigInt `0n` via ToJSArgument.
   for (size_t i = 0; i < expected_args; i++) {
     callback_args[i] = ToJSArgument(isolate, cb->args[i], args[i]);
+  }
+
+  // When native code invokes the callback from the event loop (for example
+  // through a libuv handle), no callback scope is active. Open one so that
+  // nextTick and microtasks queued by the callback are drained when it
+  // returns, as for Node.js's own callbacks. Callbacks invoked synchronously
+  // during a call into native code already run inside the caller's scope.
+  Context::Scope context_scope(context);
+  std::optional<InternalCallbackScope> callback_scope;
+  if (env->async_callback_scope_depth() == 0) {
+    callback_scope.emplace(env, Object::New(isolate), async_context{0, 0});
   }
 
   TryCatch try_catch(isolate);
@@ -1068,6 +1095,10 @@ void DynamicLibrary::RegisterCallback(const FunctionCallbackInfo<Value>& args) {
   }
 
   if (args[0]->IsFunction()) {
+    if (args.Length() > 1) {
+      THROW_ERR_INVALID_ARG_TYPE(env, "Callback must be the last argument");
+      return;
+    }
     fn = args[0].As<Function>();
   } else {
     if (!args[0]->IsObject() || args[0]->IsArray()) {
@@ -1100,7 +1131,7 @@ void DynamicLibrary::RegisterCallback(const FunctionCallbackInfo<Value>& args) {
   }
 
   auto callback = std::unique_ptr<FFICallback>(
-      new FFICallback{.owner = lib,
+      new FFICallback{.owner = BaseObjectPtr<DynamicLibrary>(lib),
                       .env = env,
                       .thread_id = std::this_thread::get_id(),
                       .fn = Global<Function>(isolate, fn),

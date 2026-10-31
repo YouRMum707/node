@@ -336,7 +336,7 @@ added: v0.0.1
 <!-- YAML
 added: v23.0.0
 changes:
-  - version: REPLACEME
+  - version: v27.0.0-alpha.0.0.0
     pr-url: https://github.com/nodejs/node/pull/65284
     description: No longer disableable with the `--no-experimental-websocket` CLI flag.
 -->
@@ -1303,7 +1303,7 @@ added:
   - v21.0.0
   - v20.10.0
 changes:
-  - version: REPLACEME
+  - version: v27.0.0-alpha.0.0.0
     pr-url: https://github.com/nodejs/node/pull/65284
     description: No longer disableable with the `--no-experimental-websocket` CLI flag.
   - version: v22.4.0
@@ -1377,6 +1377,12 @@ accepted and how failures are reported:
 [Type stripping][type stripping] only applies to module workers loaded from
 `file:` URLs. The `type` option, not the file extension, decides how an entry is
 run, so a `.cts` entry is still evaluated as an ES module.
+
+Package resolution within a Web Worker, including the entry point, its
+dependencies, `import()`, `require()`, and `import.meta.resolve()`, applies
+the `"worker"` [package condition][] in addition to the usual conditions.
+Threads created through [`node:worker_threads`][] from within a Web Worker do
+not apply it.
 
 ### Differences from the HTML Standard
 
@@ -1545,6 +1551,7 @@ A browser-compatible implementation of [`WritableStreamDefaultWriter`][].
 [browser `LockManager`]: https://developer.mozilla.org/en-US/docs/Web/API/LockManager
 [buffer section]: buffer.md
 [built-in objects]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects
+[package condition]: packages.md#conditional-exports
 [timers]: timers.md
 [type stripping]: typescript.md#type-stripping
 [webassembly-mdn]: https://developer.mozilla.org/en-US/docs/WebAssembly
